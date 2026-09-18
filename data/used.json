@@ -1,6 +1,20 @@
 {
-  "学习": [],
-  "工作": [],
-  "娱乐": [],
-  "生活": []
+  "学习": [
+    "lanqiao",
+    "jiumodiary",
+    "gushiwen"
+  ],
+  "工作": [
+    "jianguoyun",
+    "jijian"
+  ],
+  "娱乐": [
+    "ciweimao",
+    "yangshipin",
+    "xiaoyuzhou"
+  ],
+  "生活": [
+    "icostapp",
+    "gzweix"
+  ]
 }
