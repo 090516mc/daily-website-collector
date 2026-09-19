@@ -1,20 +1,30 @@
 {
   "学习": [
-    "lanqiao",
+    "mdn",
+    "shanbay",
+    "cxyxiaowu",
     "jiumodiary",
+    "lanqiao",
     "gushiwen"
   ],
   "工作": [
+    "jijian",
     "jianguoyun",
-    "jijian"
+    "wjqq",
+    "worktile"
   ],
   "娱乐": [
-    "ciweimao",
     "yangshipin",
-    "xiaoyuzhou"
+    "bh3",
+    "ciweimao",
+    "hanfuzhou",
+    "xiaoyuzhou",
+    "indiecn"
   ],
   "生活": [
+    "boqii",
     "icostapp",
-    "gzweix"
+    "gzweix",
+    "weather"
   ]
 }
