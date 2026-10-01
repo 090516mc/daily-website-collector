@@ -87,10 +87,13 @@ git push -u origin main
 - **去重规则**：`data/used.json` **只记录网址**（不记网站其他信息）。每天采用前，与【全部历史网址】对比，重复即弃、
   补新，保证当天 10 个网址与历史不重复。
 - **分类**：采用的网址由模型判断属于 学习 / 工作 / 娱乐 / 生活 哪一类，文档按这四类分组展示。
+- **周日新站观测**：每周日，程序还会联网抓取观测源 `WEEKLY_SOURCES`（默认 `https://haozhan.wang,https://chinesesite.net`）里的外部链接，
+  过滤后让 AI 用一句话说明每个网站是干什么的，固定追加在当日文档末尾的「本周新上线网站观察（周日版）」一章。
 
-## 扩展点（方便以后改程序）
+## 扩展点
 
 - 调整 AI 挑站（数量 / 提示词 / 轮数）：改 `main.py` 里的 `ask_ai_candidates()`；
+- 换周日报 / 加观测源：改 `main.py` 里的 `fetch_week_new_sites()`，或在工作流 `daily.yml` 的 `WEEKLY_SOURCES` 里增减网页地址（逗号分隔）；
 - 换兜底来源 / 加在线网址源：改 `src/fetcher.py` 里的 `fetch_candidates_all()`，或配置 `URL_SOURCE`；
 - 加可访问性 / 是否翻墙筛查：改 `src/fetcher.py` 里的 `screen()`；
 - 改每天数量：改 `main.py` 里的 `EXPECTED_TOTAL`；

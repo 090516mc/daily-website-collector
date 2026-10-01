@@ -212,6 +212,7 @@ def fetch_week_new_sites():
         if not src:
             continue
         try:
+            src_host = urlparse(src).netloc.lower()
             r = requests.get(
                 src,
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
@@ -226,6 +227,8 @@ def fetch_week_new_sites():
                     continue
                 host = urlparse(href).netloc.lower()
                 if host.count(".") < 1:
+                    continue
+                if host == src_host or host.endswith("." + src_host):
                     continue
                 if href in used or href in seen:
                     continue

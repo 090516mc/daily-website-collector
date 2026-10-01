@@ -30,6 +30,8 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           QQ_MAIL_ADDR: ${{ secrets.QQ_MAIL_ADDR }}
           QQ_MAIL_AUTH_CODE: ${{ secrets.QQ_MAIL_AUTH_CODE }}
+          # 周日观测源：程序联网抓取以下页面里的外部链接，整理成“本周新上线网站观察”。用逗号分隔多个。
+          WEEKLY_SOURCES: https://haozhan.wang,https://chinesesite.net
         run: python src/main.py
 
       - name: 提交生成的文档和记录
