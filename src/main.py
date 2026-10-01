@@ -1,17 +1,18 @@
 # -*- coding: utf-8 -*-
-"""每日精选网站收集程序（新版逻辑）。
+"""每日精选网站收集程序（AI 选站版）。
 
 运行流程：
   1. 读取 data/used.json，得到【全部历史记录过的网址】（只记录网址）；
-  2. 从网址来源（联网候选源 / 内置兜底池）随机抓取 10 个网址；
-  3. 把每次抓到的网址与全部历史记录对比，重复的去掉、补抓，直到凑满 10 个不重复网址；
-  4. 调用 DeepSeek（deepseek-v4-flash）模型，用最直白的话介绍每个网址的特点与功能，
-     并让模型返回它属于哪一类（学习/工作/娱乐/生活）；
-  5. 按四类把介绍生成一篇 Word 文档，保存到 docs/ 目录；
-  6. 更新 data/used.json，把这次实际采用的网址追加进历史记录（只记网址）。
+  2. 由 DeepSeek「负责抓取选站」：让模型挑出 10 个国内不用翻墙、非大众知名、
+     尽量不与历史重复的网站，给出格式化的网址清单；
+  3. 程序对模型给出的网址做格式校验、与全部历史网址去重；数量不足时，
+     自动回退内置候选池（src/sites.py / fetcher 的联网源）补齐，保证每天都够 10 个；
+  4. 对每个网址调用 DeepSeek，用最直白的话介绍特点与功能，并给出所属分类；
+  5. 按四类把介绍生成一篇 Word 文档，存到 docs/ 目录；
+  6. 更新 data/used.json，把本次实际采用的网址追加进历史记录（只记网址）。
 
-需要环境变量：DEEPSEEK_API_KEY（DeepSeek 密钥）。
-可选：URL_SOURCE（在线网址源地址）、QQ_MAIL_ADDR + QQ_MAIL_AUTH_CODE（发送邮件）。
+需要环境变量：DEEPSEEK_API_KEY。
+可选：URL_SOURCE、QQ_MAIL_ADDR + QQ_MAIL_AUTH_CODE。
 """
 import json
 import os
@@ -25,6 +26,7 @@ from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 from docx import Document
@@ -43,6 +45,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_FILE = REPO_ROOT / "data" / "used.json"
 DOCS_DIR = REPO_ROOT / "docs"
 
+SEPARATORS = ("|", "｜", "|", "：")
+
 
 def get_api_key():
     key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
@@ -51,8 +55,21 @@ def get_api_key():
     return key
 
 
+def _call_deepseek(prompt, temperature=0.7):
+    """调用 DeepSeek 一次，返回文本。"""
+    headers = {"Authorization": f"Bearer {get_api_key()}", "Content-Type": "application/json"}
+    payload = {
+        "model": MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": temperature,
+    }
+    resp = requests.post(API_URL, json=payload, headers=headers, timeout=60)
+    resp.raise_for_status()
+    data = resp.json()
+    return data["choices"][0]["message"]["content"].strip()
+
+
 def load_used():
-    """历史记录只保存网址。缺省返回 {"urls": [], "updated": ""}。"""
     if DATA_FILE.exists():
         data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
         return {"urls": data.get("urls", []), "updated": data.get("updated", "")}
@@ -61,43 +78,106 @@ def load_used():
 
 def save_used(used):
     DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    DATA_FILE.write_text(
-        json.dumps(used, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    DATA_FILE.write_text(json.dumps(used, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _valid_url(url):
+    u = urlparse(url)
+    return u.scheme in ("http", "https") and bool(u.netloc)
+
+
+def ask_ai_candidates(api_key, target, used_urls, rounds=4):
+    """由 AI 负责抓取选站：让模型挑 target 个不重复的候选网址，返回 {url: {name, category}}。
+
+    会对模型给出的网址做格式校验、与历史及本批去重；一轮不够就问下一轮，最多 rounds 轮。
+    说明：模型凭其知识“回忆”网址，无法保证每个网址一定可达或国内可直连，程序已做格式校验。
+    """
+    used = set(used_urls)
+    result, seen = [], set()
+    avoid = "、".join(list(used)[-30:]) or "（无）"
+
+    for _ in range(rounds):
+        need = target - len(result)
+        if need <= 0:
+            break
+        prompt = (
+            f"请你扮演“挑选网站的人”，帮我列出 {need} 个网站。要求：\n"
+            f"1. 这些网站在中国大陆不用翻墙就能直接打开，且都是真实存在、能正常打开的网站；\n"
+            f"2. 尽量覆盖 学习、工作、娱乐、生活 这四类；\n"
+            f"3. 不要选名气特别大的网红平台（例如 B 站、知乎、豆瓣、微博、抖音、百度、腾讯、阿里、京东等及它们的主力产品）；\n"
+            f"4. 不要和下面这些已经用过的网址重复：{avoid}\n"
+            f"5. 严格按这个格式输出，每行一个网站，共 {need} 行：\n"
+            f"网站名称 | https://完整网址 | 分类\n"
+            f"（分类只能填：学习、工作、娱乐、生活 之一）\n"
+            f"只输出这个列表，不要任何讲解。"
+        )
+        try:
+            text = _call_deepseek(prompt, temperature=1.0)
+        except Exception as e:
+            print(f"  AI 挑选网站第 {_ + 1} 轮出错：{e}")
+            continue
+
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            for sep in SEPARATORS:
+                if sep in line:
+                    parts = [p.strip() for p in line.split(sep)]
+                    break
+            else:
+                continue
+            if len(parts) < 2:
+                continue
+            name = parts[0].lstrip("0123456789.、 ")
+            # 尝试从第 2 个字段提取完整网址
+            url = parts[1]
+            if not url.startswith(("http://", "https://")):
+                continue
+            url = url.rstrip(".,，。；;").rstrip("/")
+            category = parts[2].removesuffix("）") if len(parts) > 2 else "生活"
+            category = category.strip()
+            if category not in CATEGORIES:
+                category = "生活"
+            if not _valid_url(url) or url in used or url in seen:
+                continue
+            seen.add(url)
+            result.append({"name": name, "url": url, "category": category})
+
+    return {item["url"]: {"name": item["name"], "category": item["category"]} for item in result}
 
 
 def select_urls(candidates, used_urls, target=EXPECTED_TOTAL):
-    """随机抓取 target 个与全部历史记录不重复的网址。
-
-    与记录重复的网址会被丢弃，再从未用过的候选中补抓，直到凑满 target 个；
-    若候选源已被历史记录全部覆盖而凑不满，则提示并允许少量重复补齐。
-    """
+    """从候选里随机抽取 target 个与全部历史不重复的网址；不足时提示并保护补齐。"""
+    candidates = dict(candidates)
+    for url in list(candidates):
+        if not _valid_url(url):
+            candidates.pop(url, None)
     pool = list(candidates)
     random.shuffle(pool)
 
     chosen = []
     for url in pool:
         if url in used_urls:
+            if url in candidates:
+                candidates.pop(url, None)
             continue
         chosen.append(url)
         if len(chosen) >= target:
             break
 
     if len(chosen) < target:
-        # 候选源里没有足够“从未用过”的网址了，做保护性补齐
-        print(f"警告：候选源可用的新网址不足，目标 {target}，已选出 {len(chosen)} 个，将允许少量重复补齐。")
-        for url in pool:
+        print(f"警告：可用新网址不足，目标 {target}，已选出 {len(chosen)} 个，将允许少量重复补齐。")
+        for url in list(candidates):
             if url not in chosen:
                 chosen.append(url)
             if len(chosen) >= target:
                 break
-        if len(chosen) < target:
-            chosen = pool[:target]
     return chosen
 
 
-def ask_model(api_key, name, url):
-    """调用 DeepSeek 模型，返回介绍文本（含分类）。"""
+def ask_model(name, url):
+    """介绍单个网站，返回文本（含分类）。"""
     prompt = (
         f"请你用最准确、最直白的日常中文（绝对不要使用任何专业术语、技术词汇、英文缩写），"
         f"给普通人介绍下面这个网站。\n"
@@ -110,23 +190,10 @@ def ask_model(api_key, name, url):
         f"【适合人群】用一句话说明适合什么人使用\n"
         f"不要输出其他任何内容。"
     )
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7,
-    }
-    resp = requests.post(API_URL, json=payload, headers=headers, timeout=60)
-    resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]["content"].strip()
+    return _call_deepseek(prompt)
 
 
 def parse_sections(text):
-    """把模型返回的固定格式文本，拆成 {分类, 简介, 特点, 功能, 适合人群}。"""
     sections = {"分类": "生活", "简介": "", "特点": "", "功能": "", "适合人群": ""}
     for key in sections:
         m = re.search(rf"【{key}】(.*?)(?=【|$)", text, re.S)
@@ -140,7 +207,6 @@ def parse_sections(text):
 
 
 def build_docx(title, grouped):
-    """按四类分组展示。grouped: {分类: [{name,url,text}, ...]}"""
     doc = Document()
     style = doc.styles["Normal"]
     style.font.name = "Microsoft YaHei"
@@ -153,7 +219,7 @@ def build_docx(title, grouped):
     head.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     intro = doc.add_paragraph(
-        "本推荐每天自动生成，随机挑选国内可访问的网站，按学习、工作、娱乐、生活四类归纳，"
+        "本推荐每天自动生成，由 AI 挑选国内可访问的网站，按学习、工作、娱乐、生活四类归纳，"
         "用最直白的话告诉你每个网站的特点与功能。"
     )
     intro.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -165,7 +231,6 @@ def build_docx(title, grouped):
         r = link.add_run(url)
         r.font.color.rgb = RGBColor(0x1F, 0x4E, 0x9C)
         r.underline = True
-
         if not text:
             doc.add_paragraph("（这次没有拿到介绍内容）")
             return
@@ -199,7 +264,6 @@ def build_docx(title, grouped):
 
 
 def send_email(attach_path, title_text):
-    """通过 QQ 邮箱 SMTP 把生成的文档作为附件发给收件邮箱。"""
     addr = os.environ.get("QQ_MAIL_ADDR", "").strip()
     code = os.environ.get("QQ_MAIL_AUTH_CODE", "").strip()
     if not addr or not code:
@@ -215,8 +279,7 @@ def send_email(attach_path, title_text):
     with open(attach_path, "rb") as f:
         part = MIMEApplication(f.read())
     filename = Path(attach_path).name
-    part.add_header("Content-Disposition", "attachment",
-                    filename=("utf-8", "", filename))
+    part.add_header("Content-Disposition", "attachment", filename=("utf-8", "", filename))
     msg.attach(part)
 
     server = smtplib.SMTP_SSL("smtp.qq.com", 465, timeout=60)
@@ -228,31 +291,39 @@ def send_email(attach_path, title_text):
 
 def main():
     api_key = get_api_key()
-
     used = load_used()
     used_urls = set(used["urls"])
 
-    candidates = fetch_candidates_all()
+    print(f"历史已记录 {len(used_urls)} 个网址，让 AI 挑选 {EXPECTED_TOTAL} 个网站……")
+    candidates = ask_ai_candidates(api_key, EXPECTED_TOTAL, used_urls)
+    print(f"AI 挑出并通过校验的去重网址：{len(candidates)} 个")
 
-    print(f"历史已记录 {len(used_urls)} 个网址，开始抓取 {EXPECTED_TOTAL} 个不重复网址……")
+    # 数量不足时回退内置候选池补齐
+    if len(candidates) < EXPECTED_TOTAL:
+        builtin = fetch_candidates_all()
+        for url, info in builtin.items():
+            if url not in candidates and _valid_url(url):
+                candidates.setdefault(url, info)
+        print(f"已用内置候选池补齐，现共有备选网址：{len(candidates)} 个")
+
     chosen_urls = select_urls(candidates, used_urls, EXPECTED_TOTAL)
-    print(f"本次抓取并去重后，实际采用 {len(chosen_urls)} 个网址。")
+    print(f"本次去重后实际采用 {len(chosen_urls)} 个网址。")
 
     items = []
     for url in chosen_urls:
         info = candidates.get(url, {})
         name = info.get("name") or url
         try:
-            text = ask_model(api_key, name, url)
+            text = ask_model(name, url)
         except Exception as e:
             print(f"  [{name}] 出错：{e}，稍后重试一次……")
             try:
-                text = ask_model(api_key, name, url)
+                text = ask_model(name, url)
             except Exception as e2:
                 print(f"  [{name}] 重试仍失败，跳过此网站：{e2}")
                 text = ""
         item = {"name": name, "url": url, "text": text}
-        item["category"] = parse_sections(text)["分类"] if text else "生活"
+        item["category"] = parse_sections(text)["分类"] if text else info.get("category", "生活")
         items.append(item)
 
     grouped = {c: [] for c in CATEGORIES}
@@ -274,7 +345,6 @@ def main():
     except Exception as e:
         print(f"邮件发送失败（不影响文档已生成）：{e}")
 
-    # 只记录本次实际采用的网址
     used["urls"] = list(dict.fromkeys(list(used["urls"]) + chosen_urls))
     used["updated"] = today.strftime("%Y-%m-%d %H:%M:%S")
     save_used(used)
