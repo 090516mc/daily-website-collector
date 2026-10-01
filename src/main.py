@@ -28,6 +28,7 @@ from email.mime.text import MIMEText
 from pathlib import Path
 from urllib.parse import urlparse
 
+import html
 import requests
 from docx import Document
 from docx.shared import Pt, RGBColor
@@ -198,6 +199,65 @@ def select_urls(candidates, used_urls, target=EXPECTED_TOTAL):
     return chosen
 
 
+def fetch_week_new_sites():
+    """周日观测：联网抓取 WEEKLY_SOURCES(逗号分隔的可访问网页) 里的外链，过滤并去重后返回候选。"""
+    raw = os.environ.get("WEEKLY_SOURCES", "").strip()
+    if not raw:
+        return None, "本周观测源未配置（可为每周工作流设置 WEEKLY_SOURCES，值为用逗号分隔的可访问网页地址）"
+    used = set(load_used()["urls"])
+    seen = set()
+    candidates = []
+    for src in raw.split(","):
+        src = src.strip()
+        if not src:
+            continue
+        try:
+            r = requests.get(
+                src,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                timeout=25,
+            )
+            if r.status_code != 200:
+                continue
+            for mm in re.finditer(r'<a[^>]+href=["\'](https?://[^"\'\s#]+)["\'][^>]*>(.*?)</a>', r.text, re.I | re.S):
+                href = mm.group(1).strip().rstrip('.,，。；;')
+                label = re.sub(r"<[^>]+>", "", mm.group(2)).strip()
+                if not _valid_url(href) or _is_blocked(href):
+                    continue
+                host = urlparse(href).netloc.lower()
+                if host.count(".") < 1:
+                    continue
+                if href in used or href in seen:
+                    continue
+                seen.add(href)
+                name = (html.unescape(label) if label else host)[:30].strip()
+                candidates.append({"host": host, "name": name, "url": href})
+        except Exception as e:
+            print(f"  周日观测来源抓取失败：{src} {e}")
+    byhost = {}
+    for c in candidates:
+        byhost.setdefault(c["host"], c)
+    items = list(byhost.values())[:20]
+    return items, f"本篇依据采集到的链接整理（来源：{raw}）；受来源所限可能含上线较早的站点，请以实际为准。"
+
+
+def collect_weekly():
+    items, note = fetch_week_new_sites()
+    if not items:
+        return {"items": [], "note": note}
+    out = []
+    for it in items[:10]:
+        try:
+            t = _call_deepseek(
+                f"用一句最直白、不含专业术语的话，告诉普通人这个网站是干什么的：站名「{it['name']}」 网址 {it['url']}。只回那一句话。"
+            )
+            t = t.strip().splitlines()[0].strip()
+        except Exception as e:
+            t = ""
+        out.append({"name": it["name"], "url": it["url"], "note": t})
+    return {"items": out, "note": note}
+
+
 def ask_model(name, url):
     """介绍单个网站，返回文本（含分类）。"""
     prompt = (
@@ -228,7 +288,7 @@ def parse_sections(text):
     return sections
 
 
-def build_docx(title, grouped):
+def build_docx(title, grouped, weekly=None):
     doc = Document()
     style = doc.styles["Normal"]
     style.font.name = "Microsoft YaHei"
@@ -282,6 +342,23 @@ def build_docx(title, grouped):
         for it in items:
             _add_site(it["name"], it["url"], it["text"])
 
+    if weekly is not None:
+        doc.add_page_break()
+        doc.add_heading("本周新上线网站观察（周日版）", level=1)
+        note = doc.add_paragraph(weekly.get("note", ""))
+        if note.runs:
+            note.runs[0].font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+        if weekly.get("items"):
+            for it in weekly["items"]:
+                doc.add_heading(it["name"], level=2)
+                lp = doc.add_paragraph()
+                r = lp.add_run(it["url"])
+                r.font.color.rgb = RGBColor(0x1F, 0x4E, 0x9C)
+                r.underline = True
+                if it.get("note"):
+                    doc.add_paragraph(it["note"])
+        else:
+            doc.add_paragraph("本周未能获取到可靠的新网站数据。")
     return doc
 
 
@@ -356,7 +433,12 @@ def main():
     date_label = today.strftime("%Y%m%d")
     title = f"每日精选网站推荐 · {today.strftime('%Y年%m月%d日')}"
 
-    doc = build_docx(title, grouped)
+    weekly = None
+    if today.weekday() == 6 or os.environ.get("FORCE_WEEKLY"):
+        weekly = collect_weekly()
+        print(f"周日观测：{weekly['note']}")
+
+    doc = build_docx(title, grouped, weekly=weekly)
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = DOCS_DIR / f"每日网站推荐_{date_label}.docx"
     doc.save(str(out_path))
