@@ -50,7 +50,7 @@ git push -u origin main
 | Secret 名 | 填什么 |
 |---|---|
 | `DEEPSEEK_API_KEY` | DeepSeek 的 API Key（`sk-xxxx`） |
-| `QQ_MAIL_ADDR` | 发件 QQ 邮箱地址，如 `mrl090516@qq.com` |
+| `QQ_MAIL_ADDR` | 发件 QQ 邮箱地址（填你自己的收件邮箱） |
 | `QQ_MAIL_AUTH_CODE` | 该 QQ 邮箱的 SMTP 授权码（在 QQ 邮箱「设置 → 账户 → 开启 POP3/SMTP 服务」后生成的码） |
 
 > 授权码不是 QQ 密码，需单独开启 SMTP 服务并生成。每天生成的文档会以附件形式发送到发件邮箱（目前收件=发件）。
