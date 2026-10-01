@@ -41,6 +41,21 @@ EXPECTED_TOTAL = 10
 
 CATEGORIES = ["学习", "工作", "娱乐", "生活"]
 
+# 精简黑名单：漏网概率最高的几个大众平台域名。AI 挑中这些会被程序直接拦下。
+BLOCKED_DOMAINS = [
+    "bilibili.com", "b23.tv",
+    "zhihu.com", "douban.com",
+    "weibo.com", "weibo.cn",
+    "douyin.com", "kuaishou.com",
+    "baidu.com",
+    "tencent.com", "qq.com",
+    "163.com", "netease.com",
+    "youku.com", "iqiyi.com", "aiqiyi.com",
+    "sohu.com", "sina.com.cn",
+    "jd.com", "taobao.com", "tmall.com", "pinduoduo.com",
+    "meituan.com", "ctrip.com",
+]
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_FILE = REPO_ROOT / "data" / "used.json"
 DOCS_DIR = REPO_ROOT / "docs"
@@ -86,11 +101,17 @@ def _valid_url(url):
     return u.scheme in ("http", "https") and bool(u.netloc)
 
 
-def ask_ai_candidates(api_key, target, used_urls, rounds=4):
+def _is_blocked(url):
+    host = urlparse(url).netloc.lower()
+    return any(domain in host for domain in BLOCKED_DOMAINS)
+
+
+def ask_ai_candidates(api_key, target, used_urls, rounds=6):
     """由 AI 负责抓取选站：让模型挑 target 个不重复的候选网址，返回 {url: {name, category}}。
 
-    会对模型给出的网址做格式校验、与历史及本批去重；一轮不够就问下一轮，最多 rounds 轮。
-    说明：模型凭其知识“回忆”网址，无法保证每个网址一定可达或国内可直连，程序已做格式校验。
+    会对模型给出的网址做格式校验、与历史及本批去重、并按黑名单过滤大众平台；
+    一轮不够就问下一轮，最多 rounds 轮。说明：模型凭其知识“回忆”网址，无法保证
+    每个网址一定可达或国内可直连，程序已做格式与黑名单校验。
     """
     used = set(used_urls)
     result, seen = [], set()
@@ -102,11 +123,12 @@ def ask_ai_candidates(api_key, target, used_urls, rounds=4):
             break
         prompt = (
             f"请你扮演“挑选网站的人”，帮我列出 {need} 个网站。要求：\n"
-            f"1. 这些网站在中国大陆不用翻墙就能直接打开，且都是真实存在、能正常打开的网站；\n"
+            f"1. 这些网站在中国大陆不用翻墙就能直接打开，且都是真实存在、能正常打开的网站，不要编造不存在的网址，拿不准就换一个；\n"
             f"2. 尽量覆盖 学习、工作、娱乐、生活 这四类；\n"
-            f"3. 不要选名气特别大的网红平台（例如 B 站、知乎、豆瓣、微博、抖音、百度、腾讯、阿里、京东等及它们的主力产品）；\n"
-            f"4. 不要和下面这些已经用过的网址重复：{avoid}\n"
-            f"5. 严格按这个格式输出，每行一个网站，共 {need} 行：\n"
+            f"3. 千万别选那些‘人人皆知的大平台’，例如：哔哩哔哩、知乎、豆瓣、微博、抖音、快手、微信、百度、腾讯QQ、网易、优酷、爱奇艺、腾讯视频、搜狐、新浪、京东、淘宝、天猫、拼多多、美团、携程等，以及这些平台旗下的任何主力产品都算；\n"
+            f"4. 多挑一些“垂直、细分、冷门但真实有用”的网站，比如某个领域的小众学习站、小众工具站、小众兴趣社区等，越不为人所知越欢迎；\n"
+            f"5. 不要和下面这些已经用过的网址重复：{avoid}\n"
+            f"6. 严格按这个格式输出，每行一个网站，共 {need} 行：\n"
             f"网站名称 | https://完整网址 | 分类\n"
             f"（分类只能填：学习、工作、娱乐、生活 之一）\n"
             f"只输出这个列表，不要任何讲解。"
@@ -139,7 +161,7 @@ def ask_ai_candidates(api_key, target, used_urls, rounds=4):
             category = category.strip()
             if category not in CATEGORIES:
                 category = "生活"
-            if not _valid_url(url) or url in used or url in seen:
+            if not _valid_url(url) or _is_blocked(url) or url in used or url in seen:
                 continue
             seen.add(url)
             result.append({"name": name, "url": url, "category": category})
@@ -151,7 +173,7 @@ def select_urls(candidates, used_urls, target=EXPECTED_TOTAL):
     """从候选里随机抽取 target 个与全部历史不重复的网址；不足时提示并保护补齐。"""
     candidates = dict(candidates)
     for url in list(candidates):
-        if not _valid_url(url):
+        if not _valid_url(url) or _is_blocked(url):
             candidates.pop(url, None)
     pool = list(candidates)
     random.shuffle(pool)
