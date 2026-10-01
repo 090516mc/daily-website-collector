@@ -26,7 +26,7 @@ from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 import html
 import requests
@@ -55,6 +55,8 @@ BLOCKED_DOMAINS = [
     "sohu.com", "sina.com.cn",
     "jd.com", "taobao.com", "tmall.com", "pinduoduo.com",
     "meituan.com", "ctrip.com",
+    "openai.com", "google.com", "grok.com", "x.com",
+    "anthropic.com", "claude.ai", "meta.ai",
 ]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -105,6 +107,18 @@ def _valid_url(url):
 def _is_blocked(url):
     host = urlparse(url).netloc.lower()
     return any(domain in host for domain in BLOCKED_DOMAINS)
+
+
+def _query_target(url):
+    """从跳转链接的参数里提取真实目标地址（如 blogtalk.org/go?link=https%3A//x.com）。"""
+    qs = urlparse(url).query
+    if not qs:
+        return None
+    for key in ("link", "l", "url", "u", "target", "redirect", "next"):
+        vals = parse_qs(qs).get(key)
+        if vals and vals[0].startswith(("http://", "https://")):
+            return vals[0]
+    return None
 
 
 def ask_ai_candidates(api_key, target, used_urls, rounds=6):
@@ -213,16 +227,27 @@ def fetch_week_new_sites():
             continue
         try:
             src_host = urlparse(src).netloc.lower()
+            # 观测源可能有过期/自签证书，仅用于抓取公开列表页，故关闭证书校验并抑制告警
+            try:
+                requests.packages.urllib3.disable_warnings(
+                    requests.packages.urllib3.exceptions.InsecureRequestWarning
+                )
+            except Exception:
+                pass
             r = requests.get(
                 src,
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
                 timeout=25,
+                verify=False,
             )
             if r.status_code != 200:
                 continue
             for mm in re.finditer(r'<a[^>]+href=["\'](https?://[^"\'\s#]+)["\'][^>]*>(.*?)</a>', r.text, re.I | re.S):
                 href = mm.group(1).strip().rstrip('.,，。；;')
                 label = re.sub(r"<[^>]+>", "", mm.group(2)).strip()
+                real = _query_target(href)
+                if real:
+                    href = real
                 if not _valid_url(href) or _is_blocked(href):
                     continue
                 host = urlparse(href).netloc.lower()
