@@ -478,6 +478,10 @@ def main():
         print(f"邮件发送失败（不影响文档已生成）：{e}")
 
     used["urls"] = list(dict.fromkeys(list(used["urls"]) + chosen_urls))
+    if weekly and weekly.get("items"):
+        weekly_urls = [it["url"] for it in weekly["items"] if it.get("url")]
+        used["urls"] = list(dict.fromkeys(list(used["urls"]) + weekly_urls))
+        print(f"周日观测：已追加 {len(weekly_urls)} 个本周新上线网址到历史记录，避免跨周重复。")
     used["updated"] = today.strftime("%Y-%m-%d %H:%M:%S")
     save_used(used)
     print(f"已追加 {len(chosen_urls)} 个网址到历史记录，避免下次重复。")
