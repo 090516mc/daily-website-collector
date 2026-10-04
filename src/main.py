@@ -109,6 +109,31 @@ def _is_blocked(url):
     return any(domain in host for domain in BLOCKED_DOMAINS)
 
 
+JUNK_HOSTS = (
+    "beian.miit.gov.cn", "www.beian.miit.gov.cn", "icp.chinaz.com",
+    "beian.gov.cn", "www.beian.gov.cn",
+)
+JUNK_LINK_HINTS = re.compile(
+    r"(备案|icp|版权|copyright|免责声明|隐私|privacy|about|aboutus|登录|login|注册|register|"
+    r"条款|terms|help|帮助|公益|友情链接|标签|rss|feed|xml|sitemap|rss.xml)",
+    re.I,
+)
+
+
+def _is_junk_link(url):
+    """过滤备案/版权/关于/登录等非网站内容的链接。"""
+    try:
+        u = urlparse(url)
+        host = u.netloc.lower()
+        if any(h in host for h in JUNK_HOSTS):
+            return True
+        sub = host.split(".")[0]
+        path = u.path.lower()
+        return bool(JUNK_LINK_HINTS.search(sub) or JUNK_LINK_HINTS.search(path))
+    except Exception:
+        return False
+
+
 def _query_target(url):
     """从跳转链接的参数里提取真实目标地址（如 blogtalk.org/go?link=https%3A//x.com）。"""
     qs = urlparse(url).query
@@ -248,7 +273,7 @@ def fetch_week_new_sites():
                 real = _query_target(href)
                 if real:
                     href = real
-                if not _valid_url(href) or _is_blocked(href):
+                if not _valid_url(href) or _is_blocked(href) or _is_junk_link(href):
                     continue
                 host = urlparse(href).netloc.lower()
                 if host.count(".") < 1:
